@@ -1,0 +1,18 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Database and memory
+backend/vini.db
+backend/chroma_db/
+
+# Secrets
+backend/.env
+backend/venv
+
+# Logs
+backend/tool_audit.log
+
+# macOS
+.DS_Store
