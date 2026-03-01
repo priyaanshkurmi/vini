@@ -1,22 +1,75 @@
-# Python
-venv/
-__pycache__/
-*.pyc
-venv/
+# Environment & Secrets
 .env
-*.wav
-backend/models/
+.env.local
+.env.production.local
+.python-version
 
-# Database and memory
-backend/vini.db
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js / Avatar
+avatar/node_modules/
+avatar/dist/
+avatar/build/
+node_modules/
+dist/
+build/
+
+# Database & Memory
+*.db
+vini.db
+chroma_db/
 backend/chroma_db/
+logs/
 
-# Secrets
-backend/.env
-backend/venv
-
-# Logs
+# Logs & Audit
+*.log
+*.wav
+tool_audit.log
 backend/tool_audit.log
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# Model files (large)
+backend/models/
+models/hey_vini.ppn
+models/tts/*.onnx
+models/tts/*.onnx.json
 
 # macOS
 .DS_Store
+Thumbs.db

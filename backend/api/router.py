@@ -4,16 +4,23 @@ from pydantic import BaseModel, field_validator
 from services.llm import get_llm_provider
 from services.prompt import build_prompt
 from memory.vector import add_memory
+from memory.conversation import save_conversation, load_conversation_history, clear_conversation_history
 from emotion.engine import emotion
 from tools.executor import execute_if_tool
 import asyncio
 import logging
+import uuid
 
 router = APIRouter()
 logger = logging.getLogger("vini.chat")
 
 conversation_history: list[dict] = []
+current_session_id: str = str(uuid.uuid4())
 MAX_HISTORY = 50
+
+
+# Load history on startup
+conversation_history = load_conversation_history(MAX_HISTORY)
 
 
 class ChatRequest(BaseModel):
@@ -61,7 +68,11 @@ async def chat(req: ChatRequest):
             if tool_result:
                 yield f"\n[Tool result: {tool_result}]"
 
-            # Keep history capped
+            # Save to database and memory
+            save_conversation("user", req.message, current_session_id)
+            save_conversation("assistant", clean_response, current_session_id)
+
+            # Keep in-memory history capped
             conversation_history.append({"role": "user",      "content": req.message})
             conversation_history.append({"role": "assistant", "content": clean_response})
             if len(conversation_history) > MAX_HISTORY:
@@ -80,6 +91,8 @@ async def get_emotion():
     return emotion.to_dict()
 
 
+
+
 @router.get("/history")
 async def get_history():
     return {"count": len(conversation_history), "history": conversation_history[-10:]}
@@ -87,5 +100,10 @@ async def get_history():
 
 @router.delete("/history")
 async def clear_history():
+    """Clear conversation history from both memory and database."""
+    global conversation_history, current_session_id
     conversation_history.clear()
+    clear_conversation_history()
+    # Start a new session for future conversations
+    current_session_id = str(uuid.uuid4())
     return {"status": "History cleared."}
