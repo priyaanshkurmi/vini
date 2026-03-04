@@ -1,4 +1,5 @@
 import io
+import re
 import asyncio
 import logging
 import uuid
@@ -25,8 +26,43 @@ MAX_HISTORY = 50
 
 FALLBACK_TEXT = "Sorry, I had trouble with that. Could you try again?"
 
-# Load history on startup
 conversation_history = load_conversation_history(MAX_HISTORY)
+
+# ── EMOTION TAG HELPERS ───────────────────────────────────────────────────────
+EMOTION_TAG_MAP = {
+    "positive":   "positive_interaction",
+    "excited":    "exciting_news",
+    "sad":        "sad_topic",
+    "surprised":  "surprise",
+    "frustrated": "user_frustrated",
+    "fun":        "joke_or_fun",
+    "neutral":    "positive_interaction",
+}
+
+def parse_emotion_tag(text: str) -> str | None:
+    match = re.search(r'<emotion>(.*?)</emotion>', text, re.IGNORECASE)
+    return match.group(1).strip().lower() if match else None
+
+def strip_emotion_tag(text: str) -> str:
+    return re.sub(r'\n?<emotion>.*?</emotion>', '', text, flags=re.IGNORECASE).strip()
+
+# ── GREETING DETECTION ────────────────────────────────────────────────────────
+GREETING_WORDS = ["hello", "hi", "hey", "good morning", "good evening", "what's up"]
+
+async def fire_emotion(tag: str):
+    """Apply emotion event and immediately broadcast to avatar."""
+    event = EMOTION_TAG_MAP.get(tag, "positive_interaction")
+    emotion.apply_event(event)
+    logger.info(f"Emotion fired: {tag} → {event} | state: {emotion.to_dict()}")
+    try:
+        from api.websocket import broadcast
+        await broadcast({
+            "type":      "heartbeat",
+            "emotion":   emotion.to_dict(),
+            "animation": tag if tag in ["excited", "surprised", "thinking"] else "idle",
+        })
+    except Exception as e:
+        logger.warning(f"Broadcast failed: {e}")
 
 
 class SpeakRequest(BaseModel):
@@ -47,7 +83,8 @@ async def speak(req: SpeakRequest):
 
 @voice_router.post("/voice")
 async def voice_chat(audio: UploadFile = File(...)):
-    # Read and decode audio
+
+    # ── READ AUDIO ────────────────────────────────────────────────────────────
     try:
         contents  = await audio.read()
         sr, data  = wav.read(io.BytesIO(contents))
@@ -56,7 +93,7 @@ async def voice_chat(audio: UploadFile = File(...)):
         logger.error(f"Audio read error: {e}")
         raise HTTPException(status_code=400, detail="Could not read audio file.")
 
-    # Transcribe
+    # ── TRANSCRIBE ────────────────────────────────────────────────────────────
     try:
         user_text = transcribe(audio_arr, sample_rate=sr)
     except Exception as e:
@@ -68,61 +105,117 @@ async def voice_chat(audio: UploadFile = File(...)):
 
     logger.info(f"Transcribed: {user_text}")
 
-    # Notify avatar — listening state
+    # Greeting detection
+    if any(w in user_text.lower() for w in GREETING_WORDS):
+        await fire_emotion("positive")
+
+    # ── NOTIFY AVATAR: THINKING ───────────────────────────────────────────────
     try:
         from api.websocket import broadcast
-        await broadcast({"type": "listening", "animation": "listening"})
+        await broadcast({"type": "thinking", "animation": "thinking"})
     except Exception:
         pass
 
-    # LLM response
+    # ── LLM ───────────────────────────────────────────────────────────────────
     try:
         prompt        = build_prompt(user_text, conversation_history)
         llm           = get_llm_provider()
-        response_text = ""
+        raw_response  = ""
         async with asyncio.timeout(30):
             async for chunk in llm.stream(prompt):
-                response_text += chunk
+                raw_response += chunk
     except asyncio.TimeoutError:
-        response_text = "I'm thinking slowly right now. Try asking me again."
+        raw_response = "I'm thinking slowly right now. Try asking me again.<emotion>neutral</emotion>"
     except Exception as e:
         logger.error(f"LLM error: {e}")
-        response_text = FALLBACK_TEXT
+        raw_response = FALLBACK_TEXT
 
-    # Tool execution
+    logger.info(f"Raw LLM response: {raw_response[:120]}...")
+
+    # ── PARSE EMOTION TAG (before anything else touches the text) ─────────────
+    emotion_tag = parse_emotion_tag(raw_response)
+    logger.info(f"Emotion tag found: {emotion_tag}")
+
+    # ── STRIP EMOTION TAG from text ───────────────────────────────────────────
+    text_no_emotion = strip_emotion_tag(raw_response)
+
+    # ── TOOL EXECUTION ────────────────────────────────────────────────────────
     try:
-        clean_response, tool_result = execute_if_tool(response_text)
+        clean_response, tool_result = execute_if_tool(text_no_emotion)
         if tool_result:
             logger.info(f"Tool result: {tool_result}")
     except Exception as e:
         logger.error(f"Tool error: {e}")
-        clean_response = response_text
+        clean_response = text_no_emotion
 
-    # Synthesize audio
+    # ── NUCLEAR STRIP — remove ALL tags before TTS ────────────────────────────
+    import re
+    clean_response = re.sub(r'<tool>.*?</tool>', '', clean_response, flags=re.DOTALL).strip()
+    clean_response = re.sub(r'<emotion>.*?</emotion>', '', clean_response, flags=re.DOTALL).strip()
+    clean_response = re.sub(r'<[^>]+>', '', clean_response).strip()  # any remaining tags
+    if not clean_response:
+        clean_response = "Done."
+
+    # ── FIRE EMOTION → AVATAR (before TTS so avatar reacts as Vini speaks) ───
+    if emotion_tag and emotion_tag in EMOTION_TAG_MAP:
+        await fire_emotion(emotion_tag)
+    else:
+        # Fallback: infer from content keywords if LLM forgot the tag
+        lower = clean_response.lower()
+        if any(w in lower for w in ["sorry", "sad", "unfortunate", "oh no"]):
+            await fire_emotion("sad")
+        elif any(w in lower for w in ["wow", "amazing", "incredible", "exciting"]):
+            await fire_emotion("excited")
+        elif any(w in lower for w in ["haha", "funny", "joke", "laugh"]):
+            await fire_emotion("fun")
+        else:
+            await fire_emotion("positive")
+
+    # ── NOTIFY AVATAR: TALKING ────────────────────────────────────────────────
+    try:
+        from api.websocket import broadcast
+        await broadcast({"type": "talking", "animation": "talking"})
+    except Exception:
+        pass
+
+    # ── SYNTHESIZE ────────────────────────────────────────────────────────────
     try:
         audio_bytes = synthesize(clean_response)
     except Exception as e:
         logger.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail="Speech synthesis failed.")
 
-    # Broadcast amplitude frames to avatar for lip sync
+    # ── BROADCAST AMPLITUDE FRAMES async (non-blocking) ───────────────────────
     try:
         frames = extract_amplitude_frames(audio_bytes)
         from api.websocket import broadcast
-        await broadcast({"type": "amplitude", "frames": frames})
+
+        async def stream_frames():
+            await broadcast({"type": "talking", "animation": "talking"})
+            for frame in frames:
+                await broadcast({
+                    "type":      "amplitude",
+                    "amplitude": float(frame),
+                    "animation": "talking"
+                })
+                await asyncio.sleep(0.02)
+            await broadcast({"type": "idle", "animation": "idle"})
+
+        # Fire and forget — runs concurrently while audio plays on client
+        asyncio.create_task(stream_frames())
+
     except Exception as e:
         logger.error(f"Amplitude broadcast error: {e}")
 
-    # Store in memory and database
+    # ── MEMORY ────────────────────────────────────────────────────────────────
     try:
-        save_conversation("user", user_text, current_session_id)
+        save_conversation("user",      user_text,      current_session_id)
         save_conversation("assistant", clean_response, current_session_id)
         conversation_history.append({"role": "user",      "content": user_text})
         conversation_history.append({"role": "assistant", "content": clean_response})
         if len(conversation_history) > MAX_HISTORY:
             del conversation_history[:2]
         add_memory(f"User said: {user_text}", category="event")
-        emotion.apply_event("positive_interaction")
     except Exception as e:
         logger.error(f"Memory error: {e}")
 

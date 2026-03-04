@@ -54,12 +54,6 @@ AVATAR_PID=$!
 sleep 2
 echo "        Started."
 
-echo ""
-echo "  ─────────────────────────────────────"
-echo "  VINI is online. Starting CLI..."
-echo "  ─────────────────────────────────────"
-echo ""
-
 # ── Interactive CLI ───────────────────────────────────────────────────────────
 cd "$BACKEND_DIR"
 source venv/bin/activate

@@ -4,23 +4,37 @@ from pydantic import BaseModel, field_validator
 from services.llm import get_llm_provider
 from services.prompt import build_prompt
 from memory.vector import add_memory
-from memory.conversation import save_conversation, load_conversation_history, clear_conversation_history
 from emotion.engine import emotion
 from tools.executor import execute_if_tool
 import asyncio
 import logging
-import uuid
+import re
 
 router = APIRouter()
 logger = logging.getLogger("vini.chat")
 
 conversation_history: list[dict] = []
-current_session_id: str = str(uuid.uuid4())
 MAX_HISTORY = 50
 
+# Map emotion tags → engine events
+EMOTION_TAG_MAP = {
+    "positive":   "positive_interaction",
+    "excited":    "exciting_news",
+    "sad":        "sad_topic",
+    "surprised":  "surprise",
+    "frustrated": "user_frustrated",
+    "fun":        "joke_or_fun",
+    "neutral":    "positive_interaction",
+}
 
-# Load history on startup
-conversation_history = load_conversation_history(MAX_HISTORY)
+
+def parse_emotion_tag(text: str) -> str | None:
+    match = re.search(r'<emotion>(.*?)</emotion>', text)
+    return match.group(1).strip() if match else None
+
+
+def strip_emotion_tag(text: str) -> str:
+    return re.sub(r'\n?<emotion>.*?</emotion>', '', text).strip()
 
 
 class ChatRequest(BaseModel):
@@ -39,6 +53,11 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
+    # Detect greeting
+    greeting_words = ["hello", "hi", "hey", "good morning", "good evening"]
+    if any(w in req.message.lower() for w in greeting_words):
+        emotion.apply_event("greeting")
+
     try:
         prompt = build_prompt(req.message, conversation_history)
         llm    = get_llm_provider()
@@ -52,9 +71,16 @@ async def chat(req: ChatRequest):
             async with asyncio.timeout(30):
                 async for chunk in llm.stream(prompt):
                     full_response += chunk
-                    yield chunk
+                    # Stream only — don't stream the emotion tag
+                    if '<emotion>' not in full_response:
+                        yield chunk
+                    else:
+                        # Stream up to where emotion tag starts
+                        tag_start = full_response.find('<emotion>')
+                        already_streamed = len(full_response) - len(chunk)
+                        if tag_start > already_streamed:
+                            yield chunk[:tag_start - already_streamed]
         except asyncio.TimeoutError:
-            logger.warning("LLM timed out.")
             yield "\n[Vini timed out. Please try again.]"
             return
         except Exception as e:
@@ -62,26 +88,41 @@ async def chat(req: ChatRequest):
             yield "\n[Something went wrong. Please try again.]"
             return
 
-        # Post-response processing
+        # Parse and apply emotion
+        emotion_tag = parse_emotion_tag(full_response)
+        clean_response = strip_emotion_tag(full_response)
+
+        if emotion_tag and emotion_tag in EMOTION_TAG_MAP:
+            event = EMOTION_TAG_MAP[emotion_tag]
+            emotion.apply_event(event)
+            logger.info(f"Emotion event: {emotion_tag} → {event}")
+
+            # Broadcast emotion change to avatar immediately
+            try:
+                from api.websocket import broadcast
+                await broadcast({
+                    "type":      "heartbeat",
+                    "emotion":   emotion.to_dict(),
+                    "animation": emotion_tag if emotion_tag in ["excited","surprised"] else "idle",
+                })
+            except Exception:
+                pass
+
+        # Tool execution
         try:
-            clean_response, tool_result = execute_if_tool(full_response)
+            tool_response, tool_result = execute_if_tool(clean_response)
             if tool_result:
                 yield f"\n[Tool result: {tool_result}]"
-
-            # Save to database and memory
-            save_conversation("user", req.message, current_session_id)
-            save_conversation("assistant", clean_response, current_session_id)
-
-            # Keep in-memory history capped
-            conversation_history.append({"role": "user",      "content": req.message})
-            conversation_history.append({"role": "assistant", "content": clean_response})
-            if len(conversation_history) > MAX_HISTORY:
-                del conversation_history[:2]
-
-            add_memory(f"User said: {req.message}", category="event")
-            emotion.apply_event("positive_interaction")
         except Exception as e:
-            logger.error(f"Post-processing error: {e}")
+            logger.error(f"Tool error: {e}")
+
+        # Store history
+        conversation_history.append({"role": "user",      "content": req.message})
+        conversation_history.append({"role": "assistant", "content": clean_response})
+        if len(conversation_history) > MAX_HISTORY:
+            del conversation_history[:2]
+
+        add_memory(f"User said: {req.message}", category="event")
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -91,8 +132,6 @@ async def get_emotion():
     return emotion.to_dict()
 
 
-
-
 @router.get("/history")
 async def get_history():
     return {"count": len(conversation_history), "history": conversation_history[-10:]}
@@ -100,10 +139,5 @@ async def get_history():
 
 @router.delete("/history")
 async def clear_history():
-    """Clear conversation history from both memory and database."""
-    global conversation_history, current_session_id
     conversation_history.clear()
-    clear_conversation_history()
-    # Start a new session for future conversations
-    current_session_id = str(uuid.uuid4())
     return {"status": "History cleared."}

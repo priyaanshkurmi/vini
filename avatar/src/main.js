@@ -19,12 +19,22 @@ function createWindow() {
     resizable: false,
     backgroundColor: '#00000000',
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      // Run renderer in context-isolated mode and expose a minimal API via preload
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     }
   })
 
-  win.loadFile(path.join(__dirname, 'index.html'))
+  // Prefer built bundle when available (smaller runtime requires)
+  const bundlePath = path.join(__dirname, '..', 'build', 'renderer.js')
+  const indexPath = path.join(__dirname, 'index.html')
+  if (require('fs').existsSync(bundlePath)) {
+    // Load the same index.html; it will reference the bundled script
+    win.loadFile(indexPath)
+  } else {
+    win.loadFile(indexPath)
+  }
 }
 
 app.whenReady().then(createWindow)
