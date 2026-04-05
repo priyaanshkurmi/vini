@@ -43,3 +43,14 @@ def list_directory(path: str) -> str:
         return "Not a directory."
     items = [f.name for f in p.iterdir()][:30]
     return json.dumps(items)
+
+def open_file(path: str) -> str:
+    import subprocess, os
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        return f"File not found: {path}"
+    try:
+        subprocess.Popen(["open", path])
+        return f"Opened {path}"
+    except Exception as e:
+        return f"Failed to open file: {e}"

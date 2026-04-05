@@ -38,6 +38,8 @@ Keep your spoken response to 1 short sentence max when performing an action.
 <tool>{"action": "create_file", "path": "~/Desktop/name.txt", "content": "text"}</tool>
 <tool>{"action": "read_file", "path": "~/Desktop/name.txt"}</tool>
 <tool>{"action": "list_directory", "path": "~/Desktop"}</tool>
+<tool>{"action": "open_file", "path": "~/Downloads/resume.pdf"}</tool>
+<tool>{"action": "open_file", "path": "~/path/to/file.pdf"}</tool>
 
 ALLOWED APPS: safari, finder, notes, calendar, terminal, calculator, music, photos
 
