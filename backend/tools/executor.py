@@ -1,7 +1,7 @@
 import re
 import logging
 from datetime import datetime
-from tools.registry import open_app, create_file, read_file, list_directory, open_file
+from tools.registry import open_app, create_file, read_file, list_directory, open_file, run_shortcut, set_volume, get_clipboard
 from tools.detector import extract_tool_call
 
 logging.basicConfig(
@@ -25,6 +25,9 @@ def execute_if_tool(response_text: str) -> tuple[str, str | None]:
         "read_file":      lambda: read_file(call.get("path", "")),
         "list_directory": lambda: list_directory(call.get("path", "")),
         "open_file":      lambda: open_file(call.get("path", "")),
+        "run_shortcut":   lambda: run_shortcut(call.get("name", "")),
+        "set_volume":     lambda: set_volume(int(call.get("level", 50))),
+        "get_clipboard":  lambda: get_clipboard(),
     }
 
     result = dispatch.get(action, lambda: f"Unknown tool: {action}")()
